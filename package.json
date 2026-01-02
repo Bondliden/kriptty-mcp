@@ -19,7 +19,11 @@
     "type": "git",
     "url": "git+https://github.com/kosta-poland/kriptty-mcp.git"
   },
-  "keywords": ["mcp", "kriptty", "admin"],
+  "keywords": [
+    "mcp",
+    "kriptty",
+    "admin"
+  ],
   "author": "",
   "license": "ISC",
   "type": "module",
@@ -29,9 +33,15 @@
   "homepage": "https://github.com/kosta-poland/kriptty-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.23.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "helmet": "^8.1.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
     "@types/node": "^24.10.1",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"

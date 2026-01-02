@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { getTransportConfig } from './config.js';
+import { startHttpServer } from './transports/http.js';
 import {
   listUsers,
   getUser,
@@ -50,12 +53,13 @@ import {
   getPnlStats,
 } from './tools/trades.js';
 
-const server = new McpServer({
-  name: 'kriptty-mcp',
-  version: '1.0.0',
-});
+function createServer(): McpServer {
+  const server = new McpServer({
+    name: 'kriptty-mcp',
+    version: '1.0.0',
+  });
 
-server.registerTool(
+  server.registerTool(
   'list_users',
   {
     title: 'List Users',
@@ -827,10 +831,20 @@ server.registerTool(
   }
 );
 
+  return server;
+}
+
 async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Kriptty MCP server running on stdio');
+  const transportConfig = getTransportConfig();
+
+  if (transportConfig.transportMode === 'http') {
+    await startHttpServer(createServer);
+  } else {
+    const server = createServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error('Kriptty MCP server running on stdio');
+  }
 }
 
 main().catch((error) => {

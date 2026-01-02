@@ -1,0 +1,39 @@
+services:
+  mcp-server:
+    build: .
+    container_name: kriptty-mcp
+    restart: unless-stopped
+    environment:
+      - TRANSPORT_MODE=http
+      - HTTP_PORT=3000
+      - MCP_AUTH_TOKENS=${MCP_AUTH_TOKENS}
+      - KRIPTTY_API_URL=${KRIPTTY_API_URL}
+      - KRIPTTY_API_TOKEN=${KRIPTTY_API_TOKEN}
+    expose:
+      - "3000"
+    networks:
+      - mcp-network
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: kriptty-mcp-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - mcp-network
+    depends_on:
+      - mcp-server
+
+networks:
+  mcp-network:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
