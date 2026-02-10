@@ -1,6 +1,6 @@
 {
   "name": "kriptty-mcp",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "MCP server for Kriptty admin API",
   "main": "dist/index.js",
   "bin": {
