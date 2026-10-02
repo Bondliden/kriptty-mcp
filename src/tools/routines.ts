@@ -1,40 +1,44 @@
 import { z } from 'zod';
-import { getApiClient, ApiError, RoutineAction } from '../api/client.js';
+import { getApiClient, type Routine, type RoutineAction } from '../api/client.js';
+import { apiErrorText, BOT_LIMITS, BOT_MODES, botModeLabels, GRID_MODES, gridModeLabels } from './common.js';
 
-export const getRoutineParametersSchema = z.object({});
+const routineId = z.string().uuid().describe('Routine ID (UUID)');
+const botMode = z.enum(BOT_MODES);
+const walletExposure = z.number().min(0).max(BOT_LIMITS.weMax);
 
-export const listRoutinesSchema = z.object({});
-
-export const getRoutineSchema = z.object({
-  id: z.string().uuid().describe('Routine ID (UUID)'),
+export const getRoutineParametersSchema = z.object({
+  user_id: z.number().int().positive().optional().describe('Only list the grids of this user'),
 });
+
+export const listRoutinesSchema = z.object({
+  user_id: z.number().int().positive().optional().describe('Only the routines of this user'),
+});
+
+export const getRoutineSchema = z.object({ id: routineId });
 
 export const createRoutineSchema = z.object({
   user_id: z.number().int().positive().describe('User ID'),
   name: z.string().min(1).max(52).describe('Routine name'),
-  grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).describe('Grid mode'),
+  grid_mode: z.enum(GRID_MODES).describe('Grid mode'),
   grid_id: z.number().int().min(0).describe('Grid ID (0 for none)'),
-  lm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-  lwe: z.number().min(0).max(11).describe('Long wallet exposure (0-11)'),
-  sm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-  swe: z.number().min(0).max(11).describe('Short wallet exposure (0-11)'),
+  lm: botMode.describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  lwe: walletExposure.describe(`Long wallet exposure (0-${BOT_LIMITS.weMax})`),
+  sm: botMode.describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  swe: walletExposure.describe(`Short wallet exposure (0-${BOT_LIMITS.weMax})`),
 });
 
 export const updateRoutineSchema = z.object({
-  id: z.string().uuid().describe('Routine ID (UUID)'),
+  id: routineId,
   name: z.string().min(1).max(52).optional().describe('Routine name'),
-  grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).optional().describe('Grid mode'),
+  grid_mode: z.enum(GRID_MODES).optional().describe('Grid mode'),
   grid_id: z.number().int().min(0).optional().describe('Grid ID (0 for none)'),
-  lm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Long mode'),
-  lwe: z.number().min(0).max(11).optional().describe('Long wallet exposure (0-11)'),
-  sm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Short mode'),
-  swe: z.number().min(0).max(11).optional().describe('Short wallet exposure (0-11)'),
+  lm: botMode.optional().describe('Long mode'),
+  lwe: walletExposure.optional().describe(`Long wallet exposure (0-${BOT_LIMITS.weMax})`),
+  sm: botMode.optional().describe('Short mode'),
+  swe: walletExposure.optional().describe(`Short wallet exposure (0-${BOT_LIMITS.weMax})`),
 });
 
-export const runRoutineSchema = z.object({
-  id: z.string().uuid().describe('Routine ID (UUID)'),
-  exchange_id: z.number().int().positive().describe('Exchange ID to run routine on (get from list_users)'),
-});
+export const runRoutineSchema = z.object({ id: routineId });
 
 export type GetRoutineParametersParams = z.infer<typeof getRoutineParametersSchema>;
 export type ListRoutinesParams = z.infer<typeof listRoutinesSchema>;
@@ -43,25 +47,40 @@ export type CreateRoutineParams = z.infer<typeof createRoutineSchema>;
 export type UpdateRoutineParams = z.infer<typeof updateRoutineSchema>;
 export type RunRoutineParams = z.infer<typeof runRoutineSchema>;
 
-export async function getRoutineParameters(): Promise<string> {
+function actionText(action: RoutineAction | null | undefined): string {
+  if (!action) {
+    return 'no action';
+  }
+  return `${gridModeLabels[action.grid_mode] || action.grid_mode}, grid #${action.grid_id} | long ${action.lm} ${action.lwe} | short ${action.sm} ${action.swe}`;
+}
+
+function formatRoutine(routine: Routine): string {
+  const action = routine.action;
+  return `- ID: ${routine.id}
+- Name: ${routine.name}
+- User ID: ${routine.user_id}
+- Type: ${routine.type}
+- Grid Mode: ${action?.grid_mode ?? 'N/A'}
+- Grid ID: ${action?.grid_id ?? 'N/A'}
+- Long Mode: ${action?.lm ?? 'N/A'}, wallet exposure ${action?.lwe ?? 'N/A'}
+- Short Mode: ${action?.sm ?? 'N/A'}, wallet exposure ${action?.swe ?? 'N/A'}
+- Last Run: ${routine.triggered_at || 'Never'}
+- Triggered By: ${routine.triggered_by || 'N/A'}
+- Created: ${routine.created_at}`;
+}
+
+/** The admin API has no parameters endpoint: enums come from antbot, grids from GET /grids. */
+export async function getRoutineParameters(params: GetRoutineParametersParams): Promise<string> {
+  const gridModes = GRID_MODES.map(m => `  - ${m}: ${gridModeLabels[m]}`).join('\n');
+  const botModes = BOT_MODES.map(m => `  - ${m}: ${botModeLabels[m]}`).join('\n');
+  let grids: string;
   try {
-    const client = getApiClient();
-    const response = await client.getRoutineParameters();
-    const params = response.data;
-
-    const gridModes = Object.entries(params.grid_modes)
-      .map(([key, label]) => `  - ${key}: ${label}`)
-      .join('\n');
-
-    const botModes = Object.entries(params.bot_modes)
-      .map(([key, label]) => `  - ${key}: ${label}`)
-      .join('\n');
-
-    const grids = params.grids
-      .map(g => `  - ID: ${g.id}, Name: ${g.name}, User: ${g.user_id}`)
-      .join('\n');
-
-    return `Routine Parameters:
+    const list = await getApiClient().listGrids(params.user_id);
+    grids = list.map(g => `  - ID: ${g.id}, Name: ${g.name}, User: ${g.user_id}`).join('\n') || '  (none)';
+  } catch (error) {
+    grids = `  ${apiErrorText('fetching grids', error)}`;
+  }
+  return `Routine Parameters:
 
 Grid Modes:
 ${gridModes}
@@ -69,177 +88,90 @@ ${gridModes}
 Bot Modes (for lm/sm):
 ${botModes}
 
-Available Grids:
-${grids || '  (none)'}`;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error fetching routine parameters: ${error.message}`;
-    }
-    throw error;
-  }
+Wallet exposure: 0-${BOT_LIMITS.weMax}
+
+Available Grids${params.user_id ? ` of user ${params.user_id}` : ''}:
+${grids}`;
 }
 
-export async function listRoutines(): Promise<string> {
+export async function listRoutines(params: ListRoutinesParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.listRoutines();
-
-    if (response.data.length === 0) {
-      return 'No routines found.';
+    const all = await getApiClient().listRoutines();
+    const routines = params.user_id ? all.filter(r => r.user_id === params.user_id) : all;
+    if (routines.length === 0) {
+      return `No routines found${params.user_id ? ` for user ${params.user_id}` : ''}.`;
     }
-
-    const routinesSummary = response.data.map(routine =>
-      `- ID: ${routine.id}
-  Name: ${routine.name}
-  User: ${routine.user_id}
-  Type: ${routine.type}
-  Grid Mode: ${routine.action.grid_mode}, Grid ID: ${routine.action.grid_id}
-  Long: ${routine.action.lm} (WE: ${routine.action.lwe})
-  Short: ${routine.action.sm} (WE: ${routine.action.swe})
-  Last Run: ${routine.triggered_at || 'Never'}`
-    ).join('\n\n');
-
-    return `Routines (Total: ${response.data.length}):\n\n${routinesSummary}`;
+    const lines = routines.map(r =>
+      `- ${r.id} | ${r.name.trim()} | user ${r.user_id} | ${actionText(r.action)} | last run: ${r.triggered_at || 'never'}`
+    ).join('\n');
+    return `Routines${params.user_id ? ` of user ${params.user_id}` : ''} (Total: ${routines.length}):\n${lines}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error fetching routines: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('fetching routines', error);
   }
 }
 
 export async function getRoutine(params: GetRoutineParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.getRoutine(params.id);
-    const routine = response.data;
-
-    return `Routine Details:
-- ID: ${routine.id}
-- Name: ${routine.name}
-- User ID: ${routine.user_id}
-- Type: ${routine.type}
-- Grid Mode: ${routine.action.grid_mode}
-- Grid ID: ${routine.action.grid_id}
-- Long Mode: ${routine.action.lm}
-- Long Wallet Exposure: ${routine.action.lwe}
-- Short Mode: ${routine.action.sm}
-- Short Wallet Exposure: ${routine.action.swe}
-- Last Run: ${routine.triggered_at || 'Never'}
-- Triggered By: ${routine.triggered_by || 'N/A'}
-- Created: ${routine.created_at}`;
+    const routine = await getApiClient().getRoutine(params.id);
+    return `Routine Details:\n${formatRoutine(routine)}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Routine with ID ${params.id} not found.`;
-      }
-      return `Error fetching routine: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('fetching routine', error, `Routine with ID ${params.id} not found.`);
   }
 }
 
 export async function createRoutine(params: CreateRoutineParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const action: RoutineAction = {
-      grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
-      lm: params.lm,
-      lwe: params.lwe,
-      sm: params.sm,
-      swe: params.swe,
-    };
-
-    const response = await client.createRoutine({
+    const routine = await getApiClient().createRoutine({
       user_id: params.user_id,
       name: params.name,
-      action,
+      type: 'passivbot',
+      action: {
+        grid_mode: params.grid_mode,
+        grid_id: params.grid_id,
+        lm: params.lm,
+        lwe: params.lwe,
+        sm: params.sm,
+        swe: params.swe,
+      },
     });
-    const routine = response.data;
-
-    return `Routine created successfully:
-- ID: ${routine.id}
-- Name: ${routine.name}
-- User ID: ${routine.user_id}
-- Grid Mode: ${routine.action.grid_mode}
-- Grid ID: ${routine.action.grid_id}
-- Long Mode: ${routine.action.lm} (WE: ${routine.action.lwe})
-- Short Mode: ${routine.action.sm} (WE: ${routine.action.swe})`;
+    return `Routine created successfully:\n${formatRoutine(routine)}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error creating routine: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('creating routine', error);
   }
 }
 
 export async function updateRoutine(params: UpdateRoutineParams): Promise<string> {
+  const { id, name, ...actionFields } = params;
+  const actionUpdates = Object.fromEntries(Object.entries(actionFields).filter(([, value]) => value !== undefined));
+  if (name === undefined && Object.keys(actionUpdates).length === 0) {
+    return 'Nothing to update: pass name or at least one action field.';
+  }
   try {
     const client = getApiClient();
-
-    const updateData: {
-      name?: string;
-      action?: Partial<RoutineAction>;
-    } = {};
-
-    if (params.name) {
-      updateData.name = params.name;
+    const updateData: { name?: string; action?: RoutineAction } = {};
+    if (name !== undefined) {
+      updateData.name = name;
     }
-
-    const actionUpdates: Partial<RoutineAction> = {};
-    if (params.grid_mode !== undefined) actionUpdates.grid_mode = params.grid_mode;
-    if (params.grid_id !== undefined) actionUpdates.grid_id = params.grid_id;
-    if (params.lm !== undefined) actionUpdates.lm = params.lm;
-    if (params.lwe !== undefined) actionUpdates.lwe = params.lwe;
-    if (params.sm !== undefined) actionUpdates.sm = params.sm;
-    if (params.swe !== undefined) actionUpdates.swe = params.swe;
-
     if (Object.keys(actionUpdates).length > 0) {
-      updateData.action = actionUpdates;
+      // PUT /routines/{id} replaces the whole action JSON, so merge with the stored one first.
+      const current = await client.getRoutine(id);
+      updateData.action = { ...current.action, ...actionUpdates } as RoutineAction;
     }
-
-    const response = await client.updateRoutine(params.id, updateData);
-    const routine = response.data;
-
-    return `Routine updated successfully:
-- ID: ${routine.id}
-- Name: ${routine.name}
-- Grid Mode: ${routine.action.grid_mode}
-- Grid ID: ${routine.action.grid_id}
-- Long Mode: ${routine.action.lm} (WE: ${routine.action.lwe})
-- Short Mode: ${routine.action.sm} (WE: ${routine.action.swe})`;
+    const routine = await client.updateRoutine(id, updateData);
+    return `Routine updated successfully:\n${formatRoutine(routine)}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Routine with ID ${params.id} not found.`;
-      }
-      return `Error updating routine: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('updating routine', error, `Routine with ID ${id} not found.`);
   }
 }
 
 export async function runRoutine(params: RunRoutineParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.runRoutine(params.id, params.exchange_id);
-
-    return `${response.message}
-- Routine: ${response.data.name}
-- Exchange ID: ${params.exchange_id}
-- Triggered At: ${response.data.triggered_at}
-- Triggered By: ${response.data.triggered_by}`;
+    const result = await getApiClient().runRoutine(params.id);
+    return `The API answered success=${result.success ? 'true' : 'false'}, but its current version does NOT execute the routine:
+it only returns it (no bot was changed). Last real run: ${result.routine.triggered_at || 'never'}.
+- Routine: ${result.routine.name} (${result.routine.id})
+- Action: ${actionText(result.routine.action)}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Routine with ID ${params.id} not found.`;
-      }
-      if (error.status === 422) {
-        return `Error: Exchange does not belong to routine owner or invalid exchange_id.`;
-      }
-      return `Error running routine: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('running routine', error, `Routine with ID ${params.id} not found.`);
   }
 }

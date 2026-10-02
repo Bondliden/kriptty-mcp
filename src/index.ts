@@ -4,838 +4,273 @@ import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { getTransportConfig } from './config.js';
+import { getTransportConfig, isReadOnly } from './config.js';
 import { startHttpServer } from './transports/http.js';
-import {
-  listUsers,
-  getUser,
-  createUser,
-  updateUserEmail,
-  updateUserName,
-  updateUserPassword,
-  updateUserAdmin,
-  updateUserRole,
-  listRoles,
-} from './tools/users.js';
-import {
-  getRoutineParameters,
-  listRoutines,
-  getRoutine,
-  createRoutine,
-  updateRoutine,
-  runRoutine,
-} from './tools/routines.js';
-import {
-  getExchangeParameters,
-  listExchanges,
-  getExchange,
-  createExchange,
-  updateExchange,
-  refreshExchange,
-} from './tools/exchanges.js';
-import {
-  getBotParameters,
-  listBots,
-  getBot,
-  createBot,
-  updateBot,
-  startBot,
-  stopBot,
-  restartBot,
-  swapBotWe,
-  simpleSwapBotWe,
-  getBotStatus,
-} from './tools/bots.js';
-import {
-  listTrades,
-  getTrade,
-  listTradeSymbols,
-  getPnlStats,
-} from './tools/trades.js';
+import { VERSION } from './version.js';
+import * as users from './tools/users.js';
+import * as exchanges from './tools/exchanges.js';
+import * as bots from './tools/bots.js';
+import * as grids from './tools/grids.js';
+import * as routines from './tools/routines.js';
+import * as trades from './tools/trades.js';
+
+interface ToolDefinition {
+  name: string;
+  title: string;
+  description: string;
+  schema: z.ZodObject;
+  /** GET-only tools. KRIPTTY_READ_ONLY=1 registers nothing else. */
+  readOnly: boolean;
+  destructive?: boolean;
+  idempotent?: boolean;
+  run: (params: any) => Promise<string> | string;
+}
+
+function tool<S extends z.ZodObject>(
+  definition: Omit<ToolDefinition, 'schema' | 'run'> & { schema: S; run: (params: z.infer<S>) => Promise<string> | string }
+): ToolDefinition {
+  return definition;
+}
+
+const TOOLS: ToolDefinition[] = [
+  // Users
+  tool({
+    name: 'list_users', title: 'List Users', readOnly: true,
+    description: 'List all users from Kriptty with their main exchange ID',
+    schema: users.listUsersSchema, run: users.listUsers,
+  }),
+  tool({
+    name: 'get_user', title: 'Get User', readOnly: true,
+    description: 'Get a single user by ID from Kriptty',
+    schema: users.getUserSchema, run: users.getUser,
+  }),
+  tool({
+    name: 'create_user', title: 'Create User', readOnly: false, destructive: false,
+    description: 'Create a new user in Kriptty',
+    schema: users.createUserSchema, run: users.createUser,
+  }),
+  tool({
+    name: 'update_user_email', title: 'Update User Email', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update email for a user',
+    schema: users.updateUserEmailSchema, run: users.updateUserEmail,
+  }),
+  tool({
+    name: 'update_user_name', title: 'Update User Name', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update name for a user',
+    schema: users.updateUserNameSchema, run: users.updateUserName,
+  }),
+  tool({
+    name: 'update_user_password', title: 'Update User Password', readOnly: false, destructive: true, idempotent: true,
+    description: 'Set a new password for a user',
+    schema: users.updateUserPasswordSchema, run: users.updateUserPassword,
+  }),
+  tool({
+    name: 'update_user_admin', title: 'Update User Admin Status', readOnly: false, destructive: true, idempotent: true,
+    description: 'Set admin status for a user',
+    schema: users.updateUserAdminSchema, run: users.updateUserAdmin,
+  }),
+  tool({
+    name: 'update_user_role', title: 'Update User Role', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update role for a user (1=Admin, 2=User)',
+    schema: users.updateUserRoleSchema, run: users.updateUserRole,
+  }),
+  tool({
+    name: 'list_roles', title: 'List Roles', readOnly: true,
+    description: 'List available user roles',
+    schema: users.listRolesSchema, run: users.listRoles,
+  }),
+
+  // Exchanges
+  tool({
+    name: 'list_exchange_parameters', title: 'List Exchange Parameters', readOnly: true,
+    description: 'List available exchange types, risk modes, and field requirements (no API call)',
+    schema: exchanges.getExchangeParametersSchema, run: exchanges.getExchangeParameters,
+  }),
+  tool({
+    name: 'list_exchanges', title: 'List User Exchanges', readOnly: true,
+    description: 'List all exchanges (accounts) of a specific user, with balance and API error flag',
+    schema: exchanges.listExchangesSchema, run: exchanges.listExchanges,
+  }),
+  tool({
+    name: 'get_exchange', title: 'Get Exchange', readOnly: true,
+    description: 'Get detailed information about a specific exchange (API keys are never returned)',
+    schema: exchanges.getExchangeSchema, run: exchanges.getExchange,
+  }),
+  tool({
+    name: 'create_exchange', title: 'Create Exchange', readOnly: false, destructive: false,
+    description: 'Create a new exchange for a user with API credentials. Known API issue: AdminApiController::createExchange drops user_id (not fillable), so this fails until the API is fixed.',
+    schema: exchanges.createExchangeSchema, run: exchanges.createExchange,
+  }),
+  tool({
+    name: 'update_exchange', title: 'Update Exchange', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update an existing exchange (name, type, risk mode, credentials). Only provided fields are updated.',
+    schema: exchanges.updateExchangeSchema, run: exchanges.updateExchange,
+  }),
+  tool({
+    name: 'refresh_exchange', title: 'Refresh Exchange', readOnly: false, destructive: false, idempotent: true,
+    description: 'Ask the API to refresh an exchange. The current admin API only returns the stored exchange; it does not re-sync the balance.',
+    schema: exchanges.refreshExchangeSchema, run: exchanges.refreshExchange,
+  }),
+  tool({
+    name: 'list_exchange_symbols', title: 'List Exchange Symbols', readOnly: true,
+    description: 'List the symbols available on the exchange of an account (id, exchange name, short name), optionally filtered',
+    schema: exchanges.listExchangeSymbolsSchema, run: exchanges.listExchangeSymbols,
+  }),
+  tool({
+    name: 'list_positions', title: 'List Open Positions', readOnly: true,
+    description: 'List open positions of an exchange (synced every 5 minutes) with unrealised PnL',
+    schema: exchanges.listPositionsSchema, run: exchanges.listPositions,
+  }),
+
+  // Bots
+  tool({
+    name: 'list_bot_parameters', title: 'List Bot Parameters', readOnly: true,
+    description: 'List bot modes, grid modes, market types, API limits and the available grids',
+    schema: bots.getBotParametersSchema, run: bots.getBotParameters,
+  }),
+  tool({
+    name: 'list_bots', title: 'List Bots', readOnly: true,
+    description: 'List bots filtered by user_id or exchange_id (one line per bot). At least one filter is required.',
+    schema: bots.listBotsSchema, run: bots.listBots,
+  }),
+  tool({
+    name: 'get_bot', title: 'Get Bot', readOnly: true,
+    description: 'Get detailed information about a specific bot, including a live process check',
+    schema: bots.getBotSchema, run: bots.getBot,
+  }),
+  tool({
+    name: 'create_bot', title: 'Create Bot', readOnly: false, destructive: false,
+    description: 'Create a new bot (stopped) for the owner of the exchange. Refuses a symbol that already has a bot in that account. Use list_bot_parameters, list_exchange_symbols and list_grids for the options.',
+    schema: bots.createBotSchema, run: bots.createBot,
+  }),
+  tool({
+    name: 'update_bot', title: 'Update Bot', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update a bot (validated by the API: wallet exposure 0-2, leverage 1-20). Only provided fields are updated; restart=true restarts it if running so Passivbot loads the change.',
+    schema: bots.updateBotSchema, run: bots.updateBot,
+  }),
+  tool({
+    name: 'start_bot', title: 'Start Bot', readOnly: false, destructive: false, idempotent: true,
+    description: 'Start a stopped bot',
+    schema: bots.startBotSchema, run: bots.startBot,
+  }),
+  tool({
+    name: 'stop_bot', title: 'Stop Bot', readOnly: false, destructive: true, idempotent: true,
+    description: 'Stop a running bot',
+    schema: bots.stopBotSchema, run: bots.stopBot,
+  }),
+  tool({
+    name: 'restart_bot', title: 'Restart Bot', readOnly: false, destructive: true,
+    description: 'Restart a bot (stop and start)',
+    schema: bots.restartBotSchema, run: bots.restartBot,
+  }),
+  tool({
+    name: 'get_bot_status', title: 'Get Bot Status', readOnly: true,
+    description: 'Check if a bot process is currently running (live check on the server) and its current settings',
+    schema: bots.getBotStatusSchema, run: bots.getBotStatus,
+  }),
+
+  // Grids
+  tool({
+    name: 'list_grids', title: 'List Grids', readOnly: true,
+    description: 'List saved grid configurations (Passivbot), optionally for one user, with how many bots use each',
+    schema: grids.listGridsSchema, run: grids.listGrids,
+  }),
+  tool({
+    name: 'get_grid', title: 'Get Grid', readOnly: true,
+    description: 'Get a grid configuration with its Passivbot JSON',
+    schema: grids.getGridSchema, run: grids.getGrid,
+  }),
+
+  // Routines
+  tool({
+    name: 'list_routine_parameters', title: 'List Routine Parameters', readOnly: true,
+    description: 'List grid modes, bot modes and the available grids for routines',
+    schema: routines.getRoutineParametersSchema, run: routines.getRoutineParameters,
+  }),
+  tool({
+    name: 'list_routines', title: 'List Routines', readOnly: true,
+    description: 'List routines, optionally for one user',
+    schema: routines.listRoutinesSchema, run: routines.listRoutines,
+  }),
+  tool({
+    name: 'get_routine', title: 'Get Routine', readOnly: true,
+    description: 'Get a single routine by ID from Kriptty',
+    schema: routines.getRoutineSchema, run: routines.getRoutine,
+  }),
+  tool({
+    name: 'create_routine', title: 'Create Routine', readOnly: false, destructive: false,
+    description: 'Create a new routine in Kriptty',
+    schema: routines.createRoutineSchema, run: routines.createRoutine,
+  }),
+  tool({
+    name: 'update_routine', title: 'Update Routine', readOnly: false, destructive: true, idempotent: true,
+    description: 'Update an existing routine; action fields are merged with the stored ones',
+    schema: routines.updateRoutineSchema, run: routines.updateRoutine,
+  }),
+  tool({
+    name: 'run_routine', title: 'Run Routine', readOnly: false, destructive: false, idempotent: true,
+    description: 'Call the run endpoint of a routine. The current admin API does NOT execute the routine: it only returns it, so no bot changes.',
+    schema: routines.runRoutineSchema, run: routines.runRoutine,
+  }),
+
+  // Trades
+  tool({
+    name: 'list_trades', title: 'List Trades', readOnly: true,
+    description: 'List trades of an exchange, newest first, with optional symbol and date filters and pagination',
+    schema: trades.listTradesSchema, run: trades.listTrades,
+  }),
+  tool({
+    name: 'get_trade', title: 'Get Trade', readOnly: true,
+    description: 'Get detailed information about a specific trade',
+    schema: trades.getTradeSchema, run: trades.getTrade,
+  }),
+  tool({
+    name: 'list_trade_symbols', title: 'List Trade Symbols', readOnly: true,
+    description: 'Get the list of unique symbols that have been traded on an exchange',
+    schema: trades.listTradeSymbolsSchema, run: trades.listTradeSymbols,
+  }),
+  tool({
+    name: 'get_pnl_stats', title: 'Get P&L Statistics', readOnly: true,
+    description: 'Profit and loss of an exchange aggregated by day, month or year and by symbol. Without year, period=yearly downloads every trade of the account in one request.',
+    schema: trades.getPnlStatsSchema, run: trades.getPnlStats,
+  }),
+];
 
 function createServer(): McpServer {
   const server = new McpServer({
     name: 'kriptty-mcp',
-    version: '1.0.0',
+    version: VERSION,
   });
+  const readOnly = isReadOnly();
 
-  server.registerTool(
-  'list_users',
-  {
-    title: 'List Users',
-    description: 'List all users from Kriptty',
-    inputSchema: {},
-  },
-  async () => {
-    const result = await listUsers();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
+  for (const definition of TOOLS) {
+    if (readOnly && !definition.readOnly) {
+      continue;
+    }
+    server.registerTool(
+      definition.name,
+      {
+        title: definition.title,
+        description: definition.description,
+        inputSchema: definition.schema,
+        annotations: {
+          readOnlyHint: definition.readOnly,
+          destructiveHint: definition.readOnly ? false : definition.destructive ?? true,
+          idempotentHint: definition.readOnly || (definition.idempotent ?? false),
+        },
+      },
+      async (params: unknown) => ({
+        content: [{ type: 'text' as const, text: await definition.run(params) }],
+      })
+    );
   }
-);
-
-server.registerTool(
-  'get_user',
-  {
-    title: 'Get User',
-    description: 'Get a single user by ID from Kriptty',
-    inputSchema: {
-      id: z.number().int().positive().describe('User ID'),
-    },
-  },
-  async (params) => {
-    const result = await getUser({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'create_user',
-  {
-    title: 'Create User',
-    description: 'Create a new user in Kriptty',
-    inputSchema: {
-      name: z.string().min(1).describe('User name'),
-      email: z.string().email().describe('User email'),
-      password: z.string().min(8).describe('User password (min 8 characters)'),
-      role: z.number().int().describe('User role'),
-      admin: z.boolean().optional().default(false).describe('Is admin (default: false)'),
-    },
-  },
-  async (params) => {
-    const result = await createUser({
-      name: params.name,
-      email: params.email,
-      password: params.password,
-      role: params.role,
-      admin: params.admin ?? false,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_user_email',
-  {
-    title: 'Update User Email',
-    description: 'Update email for a user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      email: z.string().email().describe('New email'),
-    },
-  },
-  async (params) => {
-    const result = await updateUserEmail({ user_id: params.user_id, email: params.email });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_user_name',
-  {
-    title: 'Update User Name',
-    description: 'Update name for a user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      name: z.string().min(1).describe('New name'),
-    },
-  },
-  async (params) => {
-    const result = await updateUserName({ user_id: params.user_id, name: params.name });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_user_password',
-  {
-    title: 'Update User Password',
-    description: 'Set a new password for a user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      password: z.string().min(8).describe('New password (min 8 characters)'),
-    },
-  },
-  async (params) => {
-    const result = await updateUserPassword({ user_id: params.user_id, password: params.password });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_user_admin',
-  {
-    title: 'Update User Admin Status',
-    description: 'Set admin status for a user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      admin: z.boolean().describe('Admin status (true/false)'),
-    },
-  },
-  async (params) => {
-    const result = await updateUserAdmin({ user_id: params.user_id, admin: params.admin });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_user_role',
-  {
-    title: 'Update User Role',
-    description: 'Update role for a user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      role: z.number().int().describe('New role'),
-    },
-  },
-  async (params) => {
-    const result = await updateUserRole({ user_id: params.user_id, role: params.role });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'list_roles',
-  {
-    title: 'List Roles',
-    description: 'List available user roles',
-    inputSchema: {},
-  },
-  async () => {
-    const result = listRoles();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-// Routine tools
-server.registerTool(
-  'list_routine_parameters',
-  {
-    title: 'List Routine Parameters',
-    description: 'List available routine parameters (grid modes, bot modes, and custom grids)',
-    inputSchema: {},
-  },
-  async () => {
-    const result = await getRoutineParameters();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'list_routines',
-  {
-    title: 'List Routines',
-    description: 'List all routines from Kriptty',
-    inputSchema: {},
-  },
-  async () => {
-    const result = await listRoutines();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_routine',
-  {
-    title: 'Get Routine',
-    description: 'Get a single routine by ID from Kriptty',
-    inputSchema: {
-      id: z.string().uuid().describe('Routine ID (UUID)'),
-    },
-  },
-  async (params) => {
-    const result = await getRoutine({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'create_routine',
-  {
-    title: 'Create Routine',
-    description: 'Create a new routine in Kriptty',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      name: z.string().min(1).max(52).describe('Routine name'),
-      grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).describe('Grid mode'),
-      grid_id: z.number().int().min(0).describe('Grid ID (0 for none)'),
-      lm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-      lwe: z.number().min(0).max(11).describe('Long wallet exposure (0-11)'),
-      sm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-      swe: z.number().min(0).max(11).describe('Short wallet exposure (0-11)'),
-    },
-  },
-  async (params) => {
-    const result = await createRoutine({
-      user_id: params.user_id,
-      name: params.name,
-      grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
-      lm: params.lm,
-      lwe: params.lwe,
-      sm: params.sm,
-      swe: params.swe,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_routine',
-  {
-    title: 'Update Routine',
-    description: 'Update an existing routine in Kriptty',
-    inputSchema: {
-      id: z.string().uuid().describe('Routine ID (UUID)'),
-      name: z.string().min(1).max(52).optional().describe('Routine name'),
-      grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).optional().describe('Grid mode'),
-      grid_id: z.number().int().min(0).optional().describe('Grid ID (0 for none)'),
-      lm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Long mode'),
-      lwe: z.number().min(0).max(11).optional().describe('Long wallet exposure (0-11)'),
-      sm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Short mode'),
-      swe: z.number().min(0).max(11).optional().describe('Short wallet exposure (0-11)'),
-    },
-  },
-  async (params) => {
-    const result = await updateRoutine({
-      id: params.id,
-      name: params.name,
-      grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
-      lm: params.lm,
-      lwe: params.lwe,
-      sm: params.sm,
-      swe: params.swe,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'run_routine',
-  {
-    title: 'Run Routine',
-    description: 'Execute a routine to apply its configuration to all bots on the specified exchange. Use list_users to find exchange IDs.',
-    inputSchema: {
-      id: z.string().uuid().describe('Routine ID (UUID)'),
-      exchange_id: z.number().int().positive().describe('Exchange ID to run routine on (get from list_users)'),
-    },
-  },
-  async (params) => {
-    const result = await runRoutine({ id: params.id, exchange_id: params.exchange_id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-// Exchange tools
-server.registerTool(
-  'list_exchange_parameters',
-  {
-    title: 'List Exchange Parameters',
-    description: 'List available exchange types, risk modes, and field requirements',
-    inputSchema: {},
-  },
-  async () => {
-    const result = await getExchangeParameters();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'list_exchanges',
-  {
-    title: 'List User Exchanges',
-    description: 'List all exchanges for a specific user',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID to list exchanges for'),
-    },
-  },
-  async (params) => {
-    const result = await listExchanges({ user_id: params.user_id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_exchange',
-  {
-    title: 'Get Exchange',
-    description: 'Get detailed information about a specific exchange',
-    inputSchema: {
-      id: z.number().int().positive().describe('Exchange ID'),
-    },
-  },
-  async (params) => {
-    const result = await getExchange({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'create_exchange',
-  {
-    title: 'Create Exchange',
-    description: 'Create a new exchange for a user with API credentials. Use list_exchange_parameters to see available options.',
-    inputSchema: {
-      user_id: z.number().int().positive().describe('User ID'),
-      name: z.string().min(1).max(255).describe('Exchange name'),
-      exchange: z.enum(['bybit', 'binance', 'binance_us', 'bitget', 'okx']).describe('Exchange type'),
-      risk_mode: z.enum(['1', '2', '3']).describe('Risk mode: 1=Conservative, 2=Moderate, 3=Kamikaze'),
-      api_key: z.string().min(1).max(100).describe('API key'),
-      api_secret: z.string().min(1).max(100).describe('API secret'),
-      api_frase: z.string().max(250).optional().describe('API passphrase (required for OKX)'),
-      is_testnet: z.boolean().optional().default(false).describe('Use testnet (Bybit only)'),
-    },
-  },
-  async (params) => {
-    const result = await createExchange({
-      user_id: params.user_id,
-      name: params.name,
-      exchange: params.exchange,
-      risk_mode: params.risk_mode,
-      api_key: params.api_key,
-      api_secret: params.api_secret,
-      api_frase: params.api_frase,
-      is_testnet: params.is_testnet ?? false,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_exchange',
-  {
-    title: 'Update Exchange',
-    description: 'Update an existing exchange. Only provided fields will be updated.',
-    inputSchema: {
-      id: z.number().int().positive().describe('Exchange ID'),
-      name: z.string().min(1).max(255).optional().describe('Exchange name'),
-      exchange: z.enum(['bybit', 'binance', 'binance_us', 'bitget', 'okx']).optional().describe('Exchange type'),
-      risk_mode: z.enum(['1', '2', '3']).optional().describe('Risk mode'),
-      api_key: z.string().min(1).max(100).optional().describe('API key'),
-      api_secret: z.string().min(1).max(100).optional().describe('API secret'),
-      api_frase: z.string().max(250).optional().describe('API passphrase'),
-      is_testnet: z.boolean().optional().describe('Use testnet'),
-    },
-  },
-  async (params) => {
-    const result = await updateExchange({
-      id: params.id,
-      name: params.name,
-      exchange: params.exchange,
-      risk_mode: params.risk_mode,
-      api_key: params.api_key,
-      api_secret: params.api_secret,
-      api_frase: params.api_frase,
-      is_testnet: params.is_testnet,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'refresh_exchange',
-  {
-    title: 'Refresh Exchange Connectivity',
-    description: 'Test exchange API connectivity by syncing balance. Updates api_error flag on failure.',
-    inputSchema: {
-      id: z.number().int().positive().describe('Exchange ID'),
-    },
-  },
-  async (params) => {
-    const result = await refreshExchange({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-// Bot tools
-server.registerTool(
-  'list_bot_parameters',
-  {
-    title: 'List Bot Parameters',
-    description: 'List available bot parameters (bot modes, grid modes, market types, grids, and symbols)',
-    inputSchema: {},
-  },
-  async () => {
-    const result = await getBotParameters();
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'list_bots',
-  {
-    title: 'List Bots',
-    description: 'List bots filtered by user_id or exchange_id. At least one filter is required.',
-    inputSchema: {
-      user_id: z.number().int().positive().optional().describe('User ID to list bots for'),
-      exchange_id: z.number().int().positive().optional().describe('Exchange ID to list bots for'),
-    },
-  },
-  async (params) => {
-    const result = await listBots({ user_id: params.user_id, exchange_id: params.exchange_id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_bot',
-  {
-    title: 'Get Bot',
-    description: 'Get detailed information about a specific bot',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await getBot({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'create_bot',
-  {
-    title: 'Create Bot',
-    description: 'Create a new bot. Use list_bot_parameters to see available options for symbol_id, grid_mode, etc.',
-    inputSchema: {
-      name: z.string().min(1).max(255).describe('Bot name'),
-      exchange_id: z.number().int().positive().describe('Exchange ID'),
-      symbol_id: z.number().int().positive().describe('Symbol ID (use list_bot_parameters to see available symbols)'),
-      market_type: z.enum(['futures', 'spot']).describe('Market type'),
-      grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).describe('Grid mode'),
-      grid_id: z.number().int().positive().optional().describe('Grid ID (required when grid_mode is "custom")'),
-      lm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-      lwe: z.number().min(0).max(11).describe('Long wallet exposure (0-11)'),
-      sm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-      swe: z.number().min(0).max(11).describe('Short wallet exposure (0-11)'),
-      leverage: z.number().min(1).max(125).optional().describe('Leverage (default: 10)'),
-      assigned_balance: z.number().min(0).optional().describe('Assigned balance (default: 0 for no limit)'),
-      oh_mode: z.boolean().optional().describe('Order history mode (default: true)'),
-      show_logs: z.boolean().optional().describe('Show logs (default: true)'),
-      is_on_trend: z.boolean().optional().describe('Is on trend (default: false)'),
-      is_on_routines: z.boolean().optional().describe('Is on routines (default: false)'),
-    },
-  },
-  async (params) => {
-    const result = await createBot({
-      name: params.name,
-      exchange_id: params.exchange_id,
-      symbol_id: params.symbol_id,
-      market_type: params.market_type,
-      grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
-      lm: params.lm,
-      lwe: params.lwe,
-      sm: params.sm,
-      swe: params.swe,
-      leverage: params.leverage,
-      assigned_balance: params.assigned_balance,
-      oh_mode: params.oh_mode,
-      show_logs: params.show_logs,
-      is_on_trend: params.is_on_trend,
-      is_on_routines: params.is_on_routines,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'update_bot',
-  {
-    title: 'Update Bot',
-    description: 'Update an existing bot. Only provided fields will be updated.',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-      name: z.string().min(1).max(255).optional().describe('Bot name'),
-      symbol_id: z.number().int().positive().optional().describe('Symbol ID'),
-      market_type: z.enum(['futures', 'spot']).optional().describe('Market type'),
-      grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).optional().describe('Grid mode'),
-      grid_id: z.number().int().positive().nullable().optional().describe('Grid ID'),
-      lm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Long mode'),
-      lwe: z.number().min(0).max(11).optional().describe('Long wallet exposure (0-11)'),
-      sm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Short mode'),
-      swe: z.number().min(0).max(11).optional().describe('Short wallet exposure (0-11)'),
-      leverage: z.number().min(1).max(125).optional().describe('Leverage'),
-      assigned_balance: z.number().min(0).optional().describe('Assigned balance'),
-      oh_mode: z.boolean().optional().describe('Order history mode'),
-      show_logs: z.boolean().optional().describe('Show logs'),
-      is_on_trend: z.boolean().optional().describe('Is on trend'),
-      is_on_routines: z.boolean().optional().describe('Is on routines'),
-    },
-  },
-  async (params) => {
-    const result = await updateBot({
-      id: params.id,
-      name: params.name,
-      symbol_id: params.symbol_id,
-      market_type: params.market_type,
-      grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
-      lm: params.lm,
-      lwe: params.lwe,
-      sm: params.sm,
-      swe: params.swe,
-      leverage: params.leverage,
-      assigned_balance: params.assigned_balance,
-      oh_mode: params.oh_mode,
-      show_logs: params.show_logs,
-      is_on_trend: params.is_on_trend,
-      is_on_routines: params.is_on_routines,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'start_bot',
-  {
-    title: 'Start Bot',
-    description: 'Start a stopped bot',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await startBot({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'stop_bot',
-  {
-    title: 'Stop Bot',
-    description: 'Stop a running bot',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await stopBot({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'restart_bot',
-  {
-    title: 'Restart Bot',
-    description: 'Restart a bot (stop and start)',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await restartBot({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'swap_bot_we',
-  {
-    title: 'Swap Bot Wallet Exposure',
-    description: 'Swap wallet exposure based on trend direction. Sets long WE to 0.06 and short WE to 0.03 for LONG trend, and vice versa for SHORT.',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-      new_trend: z.enum(['LONG', 'SHORT']).describe('New trend direction'),
-    },
-  },
-  async (params) => {
-    const result = await swapBotWe({ id: params.id, new_trend: params.new_trend });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'simple_swap_bot_we',
-  {
-    title: 'Simple Swap Bot Wallet Exposure',
-    description: 'Simply swap the long and short wallet exposure values with each other',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await simpleSwapBotWe({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_bot_status',
-  {
-    title: 'Get Bot Status',
-    description: 'Check if a bot process is currently running',
-    inputSchema: {
-      id: z.number().int().positive().describe('Bot ID'),
-    },
-  },
-  async (params) => {
-    const result = await getBotStatus({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-// Trade tools
-server.registerTool(
-  'list_trades',
-  {
-    title: 'List Trades',
-    description: 'List trades for an exchange with optional filtering by symbol, date range, and sorting',
-    inputSchema: {
-      exchange_id: z.number().int().positive().describe('Exchange ID (required)'),
-      symbol: z.string().optional().describe('Filter by trading symbol (e.g., BTCUSDT)'),
-      from_date: z.string().optional().describe('Start date filter (YYYY-MM-DD)'),
-      to_date: z.string().optional().describe('End date filter (YYYY-MM-DD)'),
-      per_page: z.number().int().min(1).max(100).optional().describe('Records per page (default: 25, max: 100)'),
-      sort_by: z.enum(['id', 'symbol', 'side', 'qty', 'closed_pnl', 'order_price', 'leverage', 'created_at']).optional().describe('Column to sort by'),
-      sort_order: z.enum(['asc', 'desc']).optional().describe('Sort direction (default: desc)'),
-    },
-  },
-  async (params) => {
-    const result = await listTrades({
-      exchange_id: params.exchange_id,
-      symbol: params.symbol,
-      from_date: params.from_date,
-      to_date: params.to_date,
-      per_page: params.per_page,
-      sort_by: params.sort_by,
-      sort_order: params.sort_order,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_trade',
-  {
-    title: 'Get Trade',
-    description: 'Get detailed information about a specific trade',
-    inputSchema: {
-      id: z.number().int().positive().describe('Trade ID'),
-    },
-  },
-  async (params) => {
-    const result = await getTrade({ id: params.id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'list_trade_symbols',
-  {
-    title: 'List Trade Symbols',
-    description: 'Get list of unique symbols that have been traded on an exchange',
-    inputSchema: {
-      exchange_id: z.number().int().positive().describe('Exchange ID'),
-    },
-  },
-  async (params) => {
-    const result = await listTradeSymbols({ exchange_id: params.exchange_id });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
-
-server.registerTool(
-  'get_pnl_stats',
-  {
-    title: 'Get P&L Statistics',
-    description: 'Get profit and loss statistics aggregated by period (daily, monthly, yearly) for an exchange',
-    inputSchema: {
-      exchange_id: z.number().int().positive().describe('Exchange ID (required)'),
-      period: z.enum(['daily', 'monthly', 'yearly']).optional().describe('Aggregation period (default: daily)'),
-      month: z.number().int().min(1).max(12).optional().describe('Month filter for daily period (1-12)'),
-      year: z.number().int().min(2020).max(2100).optional().describe('Year filter'),
-    },
-  },
-  async (params) => {
-    const result = await getPnlStats({
-      exchange_id: params.exchange_id,
-      period: params.period,
-      month: params.month,
-      year: params.year,
-    });
-    return {
-      content: [{ type: 'text', text: result }],
-    };
-  }
-);
 
   return server;
 }
 
 async function main() {
   const transportConfig = getTransportConfig();
+  const mode = isReadOnly() ? ' (read-only: write tools disabled)' : '';
 
   if (transportConfig.transportMode === 'http') {
     await startHttpServer(createServer);
@@ -843,7 +278,7 @@ async function main() {
     const server = createServer();
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error('Kriptty MCP server running on stdio');
+    console.error(`Kriptty MCP server ${VERSION} running on stdio${mode}`);
   }
 }
 

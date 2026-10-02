@@ -1,7 +1,7 @@
 {
   "name": "kriptty-mcp",
-  "version": "1.0.3",
-  "description": "MCP server for Kriptty admin API",
+  "version": "1.1.0",
+  "description": "MCP server for the Kriptty admin API (fork aligned with the agentes-api routes)",
   "main": "dist/index.js",
   "bin": {
     "kriptty-mcp": "dist/index.js"
@@ -13,11 +13,12 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "smoke": "node scripts/smoke-read.mjs"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kosta-poland/kriptty-mcp.git"
+    "url": "git+https://github.com/Bondliden/kriptty-mcp.git"
   },
   "keywords": [
     "mcp",
@@ -28,9 +29,9 @@
   "license": "ISC",
   "type": "module",
   "bugs": {
-    "url": "https://github.com/kosta-poland/kriptty-mcp/issues"
+    "url": "https://github.com/Bondliden/kriptty-mcp/issues"
   },
-  "homepage": "https://github.com/kosta-poland/kriptty-mcp#readme",
+  "homepage": "https://github.com/Bondliden/kriptty-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.23.0",
     "cors": "^2.8.5",

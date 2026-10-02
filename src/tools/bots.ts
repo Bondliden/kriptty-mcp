@@ -1,160 +1,140 @@
 import { z } from 'zod';
-import { getApiClient, ApiError, Bot } from '../api/client.js';
+import { getApiClient, type Bot, type BotStatus, type BotUpdateData } from '../api/client.js';
+import {
+  apiErrorText,
+  BOT_LIMITS,
+  BOT_MODES,
+  botModeLabels,
+  GRID_MODES,
+  gridModeLabels,
+  isRunningFlag,
+  MARKET_TYPES,
+  symbolNames,
+  yesNo,
+} from './common.js';
 
-export const getBotParametersSchema = z.object({});
+const botId = z.number().int().positive().describe('Bot ID');
+const botName = z.string().min(1).max(BOT_LIMITS.nameMax).describe(`Bot name (max ${BOT_LIMITS.nameMax} characters)`);
+const botMode = z.enum(BOT_MODES);
+const walletExposure = z.number().min(0).max(BOT_LIMITS.weMax);
+const leverage = z.number().int().min(1).max(BOT_LIMITS.leverageMax);
+const symbolName = z.string().min(1).max(40);
+
+export const getBotParametersSchema = z.object({
+  user_id: z.number().int().positive().optional().describe('Only list the grids of this user'),
+});
 
 export const listBotsSchema = z.object({
   user_id: z.number().int().positive().optional().describe('User ID to list bots for'),
   exchange_id: z.number().int().positive().optional().describe('Exchange ID to list bots for'),
 });
 
-export const getBotSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
+export const getBotSchema = z.object({ id: botId });
 
 export const createBotSchema = z.object({
-  name: z.string().min(1).max(255).describe('Bot name'),
-  exchange_id: z.number().int().positive().describe('Exchange ID'),
-  symbol_id: z.number().int().positive().describe('Symbol ID (use list_bot_parameters to see available symbols)'),
-  market_type: z.enum(['futures', 'spot']).describe('Market type'),
-  grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).describe('Grid mode'),
-  grid_id: z.number().int().positive().optional().describe('Grid ID (required when grid_mode is "custom")'),
-  lm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-  lwe: z.number().min(0).max(11).describe('Long wallet exposure (0-11)'),
-  sm: z.enum(['n', 'm', 'gs', 't', 'p']).describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit, p=panic'),
-  swe: z.number().min(0).max(11).describe('Short wallet exposure (0-11)'),
-  leverage: z.number().min(1).max(125).optional().describe('Leverage (default: 10)'),
-  assigned_balance: z.number().min(0).optional().describe('Assigned balance (default: 0 for no limit)'),
-  oh_mode: z.boolean().optional().describe('Order history mode (default: true)'),
-  show_logs: z.boolean().optional().describe('Show logs (default: true)'),
-  is_on_trend: z.boolean().optional().describe('Is on trend (default: false)'),
-  is_on_routines: z.boolean().optional().describe('Is on routines (default: false)'),
+  name: botName,
+  exchange_id: z.number().int().positive().describe('Exchange ID; the bot is created for the owner of this exchange'),
+  symbol_id: z.number().int().positive().optional().describe('Symbol ID (see list_exchange_symbols)'),
+  symbol: symbolName.optional().describe('Short symbol name instead of symbol_id, e.g. "ALGOUSDT"'),
+  market_type: z.enum(MARKET_TYPES).default('futures').describe('Market type (default: futures)'),
+  grid_mode: z.enum(GRID_MODES).describe('Grid mode'),
+  grid_id: z.number().int().positive().optional().describe('Grid ID, required when grid_mode is "custom" (see list_grids)'),
+  lm: botMode.describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  lwe: walletExposure.describe(`Long wallet exposure (0-${BOT_LIMITS.weMax})`),
+  sm: botMode.describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  swe: walletExposure.describe(`Short wallet exposure (0-${BOT_LIMITS.weMax})`),
+  leverage: leverage.default(7).describe(`Leverage (1-${BOT_LIMITS.leverageMax}, default: 7)`),
+  assigned_balance: z.number().min(0).default(0).describe('Assigned balance (default: 0 = no limit)'),
+  oh_mode: z.boolean().default(false).describe('Order history mode (default: false)'),
+  show_logs: z.boolean().default(false).describe('Show logs (default: false)'),
+  is_on_trend: z.boolean().default(false).describe('Is on trend (default: false)'),
+  is_on_routines: z.boolean().default(true).describe('Is on routines (default: true)'),
 });
 
 export const updateBotSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-  name: z.string().min(1).max(255).optional().describe('Bot name'),
-  symbol_id: z.number().int().positive().optional().describe('Symbol ID'),
-  market_type: z.enum(['futures', 'spot']).optional().describe('Market type'),
-  grid_mode: z.enum(['recursive', 'neat', 'static', 'clock', 'custom']).optional().describe('Grid mode'),
-  grid_id: z.number().int().positive().nullable().optional().describe('Grid ID'),
-  lm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Long mode'),
-  lwe: z.number().min(0).max(11).optional().describe('Long wallet exposure (0-11)'),
-  sm: z.enum(['n', 'm', 'gs', 't', 'p']).optional().describe('Short mode'),
-  swe: z.number().min(0).max(11).optional().describe('Short wallet exposure (0-11)'),
-  leverage: z.number().min(1).max(125).optional().describe('Leverage'),
-  assigned_balance: z.number().min(0).optional().describe('Assigned balance'),
-  oh_mode: z.boolean().optional().describe('Order history mode'),
+  id: botId,
+  name: botName.optional(),
+  symbol_id: z.number().int().positive().optional().describe('Symbol ID (see list_exchange_symbols)'),
+  symbol: symbolName.optional().describe('Short symbol name instead of symbol_id, e.g. "ALGOUSDT"'),
+  grid_mode: z.enum(GRID_MODES).optional().describe('Grid mode'),
+  grid_id: z.number().int().positive().optional().describe('Grid ID (see list_grids)'),
+  lm: botMode.optional().describe('Long mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  lwe: walletExposure.optional().describe(`Long wallet exposure (0-${BOT_LIMITS.weMax})`),
+  sm: botMode.optional().describe('Short mode: n=normal, m=manual, gs=graceful stop, t=take profit only, p=panic'),
+  swe: walletExposure.optional().describe(`Short wallet exposure (0-${BOT_LIMITS.weMax})`),
+  leverage: leverage.optional().describe(`Leverage (1-${BOT_LIMITS.leverageMax})`),
+  assigned_balance: z.number().min(0).optional().describe('Assigned balance (0 = no limit)'),
   show_logs: z.boolean().optional().describe('Show logs'),
   is_on_trend: z.boolean().optional().describe('Is on trend'),
   is_on_routines: z.boolean().optional().describe('Is on routines'),
+  restart: z.boolean().default(false).describe('Restart the bot afterwards if it is running, so Passivbot loads the change (default: false)'),
 });
 
-export const startBotSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
-
-export const stopBotSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
-
-export const restartBotSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
-
-export const swapBotWeSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-  new_trend: z.enum(['LONG', 'SHORT']).describe('New trend direction'),
-});
-
-export const simpleSwapBotWeSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
-
-export const getBotStatusSchema = z.object({
-  id: z.number().int().positive().describe('Bot ID'),
-});
+export const startBotSchema = z.object({ id: botId });
+export const stopBotSchema = z.object({ id: botId });
+export const restartBotSchema = z.object({ id: botId });
+export const getBotStatusSchema = z.object({ id: botId });
 
 export type GetBotParametersParams = z.infer<typeof getBotParametersSchema>;
 export type ListBotsParams = z.infer<typeof listBotsSchema>;
 export type GetBotParams = z.infer<typeof getBotSchema>;
 export type CreateBotParams = z.infer<typeof createBotSchema>;
 export type UpdateBotParams = z.infer<typeof updateBotSchema>;
-export type StartBotParams = z.infer<typeof startBotSchema>;
-export type StopBotParams = z.infer<typeof stopBotSchema>;
-export type RestartBotParams = z.infer<typeof restartBotSchema>;
-export type SwapBotWeParams = z.infer<typeof swapBotWeSchema>;
-export type SimpleSwapBotWeParams = z.infer<typeof simpleSwapBotWeSchema>;
-export type GetBotStatusParams = z.infer<typeof getBotStatusSchema>;
+export type BotIdParams = z.infer<typeof startBotSchema>;
 
-const botModeLabels: Record<string, string> = {
-  'n': 'Normal',
-  'm': 'Manual',
-  'gs': 'Graceful Stop',
-  't': 'Take Profit Only',
-  'p': 'Panic',
-};
+// Above this many accounts in one listing, symbol ids are shown without resolving their names.
+const MAX_SYMBOL_LOOKUPS = 3;
 
-const gridModeLabels: Record<string, string> = {
-  'recursive': 'Recursive',
-  'neat': 'Neat',
-  'static': 'Static',
-  'clock': 'Clock',
-  'custom': 'Custom',
-};
-
-function formatBot(bot: Bot): string {
-  const exchangeInfo = bot.exchange ? `${bot.exchange.name} (${bot.exchange.exchange})` : `ID: ${bot.exchange_id}`;
-  const symbolInfo = bot.symbol ? `${bot.symbol.nice_name}` : `ID: ${bot.symbol_id}`;
-  const gridInfo = bot.grid ? bot.grid.name : (bot.grid_id ? `ID: ${bot.grid_id}` : 'N/A');
-
-  return `- ID: ${bot.id}
-  Name: ${bot.name}
-  Status: ${bot.is_running ? 'RUNNING (PID: ' + bot.pid + ')' : 'STOPPED'}
-  Exchange: ${exchangeInfo}
-  Symbol: ${symbolInfo}
-  Market Type: ${bot.market_type}
-  Grid Mode: ${gridModeLabels[bot.grid_mode] || bot.grid_mode}
-  Grid: ${gridInfo}
-  Long Mode: ${botModeLabels[bot.lm] || bot.lm} (WE: ${bot.lwe})
-  Short Mode: ${botModeLabels[bot.sm] || bot.sm} (WE: ${bot.swe})
-  Leverage: ${bot.leverage}x
-  Created: ${bot.created_at}`;
+function modeText(mode: string): string {
+  return botModeLabels[mode] ? `${botModeLabels[mode]} (${mode})` : mode;
 }
 
-function formatBotDetailed(bot: Bot): string {
-  const exchangeInfo = bot.exchange ? `${bot.exchange.name} (${bot.exchange.exchange})` : `ID: ${bot.exchange_id}`;
-  const symbolInfo = bot.symbol ? `${bot.symbol.nice_name} (${bot.symbol.name})` : `ID: ${bot.symbol_id}`;
-  const gridInfo = bot.grid ? bot.grid.name : (bot.grid_id ? `ID: ${bot.grid_id}` : 'N/A');
+function gridText(bot: Bot): string {
+  const mode = gridModeLabels[bot.grid_mode] || bot.grid_mode;
+  return bot.grid_id ? `${mode}, grid #${bot.grid_id}` : mode;
+}
 
+function stateText(bot: Bot): string {
+  return isRunningFlag(bot) ? `ON (pid ${bot.pid})` : 'OFF';
+}
+
+function formatBotLine(bot: Bot, names: Map<number, string>): string {
+  const symbol = names.get(bot.symbol_id) ?? `symbol #${bot.symbol_id}`;
+  return `- #${bot.id} ${bot.name} | ${symbol} | ${stateText(bot)} | exchange ${bot.exchange_id} | ${gridText(bot)} | long ${bot.lm} ${bot.lwe} | short ${bot.sm} ${bot.swe} | x${bot.leverage}`;
+}
+
+function formatBotDetailed(bot: Bot, status: BotStatus | null, statusError: string | null): string {
+  const symbol = status?.symbol ? `${status.symbol} (ID: ${bot.symbol_id})` : `ID: ${bot.symbol_id}`;
+  const live = status ? (status.running ? 'Yes' : 'No') : `Unknown (${statusError})`;
+  const trends = [['5m', bot.trend_5m], ['15m', bot.trend_15m], ['30m', bot.trend_30m], ['1h', bot.trend_1h]]
+    .filter(([, value]) => value)
+    .map(([frame, value]) => `${frame}: ${value}`)
+    .join(', ');
   return `Bot Details:
 - ID: ${bot.id}
 - Name: ${bot.name}
-- Status: ${bot.is_running ? 'RUNNING' : 'STOPPED'}
-- PID: ${bot.pid || 'N/A'}
+- Process running (live check): ${live}
+- Database flag: ${stateText(bot)}
 - Started At: ${bot.started_at || 'N/A'}
 - Stopped At: ${bot.stopped_at || 'N/A'}
 
 Configuration:
-- Exchange: ${exchangeInfo}
-- Symbol: ${symbolInfo}
+- Exchange ID: ${bot.exchange_id}
+- Symbol: ${symbol}
 - Market Type: ${bot.market_type}
-- Grid Mode: ${gridModeLabels[bot.grid_mode] || bot.grid_mode}
-- Grid: ${gridInfo}
+- Grid: ${gridText(bot)}
 - Leverage: ${bot.leverage}x
-- Assigned Balance: ${bot.assigned_balance > 0 ? bot.assigned_balance : 'No limit'}
+- Assigned Balance: ${Number(bot.assigned_balance) > 0 ? bot.assigned_balance : 'No limit'}
 
 Trading Modes:
-- Long Mode: ${botModeLabels[bot.lm] || bot.lm}
-- Long Wallet Exposure: ${bot.lwe}
-- Short Mode: ${botModeLabels[bot.sm] || bot.sm}
-- Short Wallet Exposure: ${bot.swe}
+- Long: ${modeText(bot.lm)}, wallet exposure ${bot.lwe}
+- Short: ${modeText(bot.sm)}, wallet exposure ${bot.swe}
 
 Options:
 - Order History Mode: ${bot.oh_mode ? 'Enabled' : 'Disabled'}
-- Show Logs: ${bot.show_logs ? 'Yes' : 'No'}
-- On Trend: ${bot.is_on_trend ? 'Yes' : 'No'}
-- On Routines: ${bot.is_on_routines ? 'Yes' : 'No'}
+- Show Logs: ${yesNo(bot.show_logs)}
+- On Trend: ${yesNo(bot.is_on_trend)}
+- On Routines: ${yesNo(bot.is_on_routines)}${trends ? `\n- Trends: ${trends}` : ''}
 
 Metadata:
 - User ID: ${bot.user_id}
@@ -162,139 +142,154 @@ Metadata:
 - Updated: ${bot.updated_at}`;
 }
 
-export async function getBotParameters(): Promise<string> {
+function formatBotSummary(bot: Bot): string {
+  return `- ID: ${bot.id}
+- Name: ${bot.name}
+- Database flag: ${stateText(bot)}
+- Grid: ${gridText(bot)}
+- Long: ${modeText(bot.lm)}, wallet exposure ${bot.lwe}
+- Short: ${modeText(bot.sm)}, wallet exposure ${bot.swe}
+- Leverage: ${bot.leverage}x`;
+}
+
+/** Resolves a short symbol name ("ALGOUSDT") or validates a symbol id on the exchange type of an account. */
+async function resolveSymbol(exchangeId: number, symbolId?: number, symbol?: string): Promise<{ id: number; name: string } | string> {
+  const names = await symbolNames(exchangeId);
+  if (symbolId !== undefined) {
+    const name = names.get(symbolId);
+    return name ? { id: symbolId, name } : `Symbol ID ${symbolId} does not exist on the exchange of account ${exchangeId}.`;
+  }
+  const wanted = (symbol ?? '').toUpperCase();
+  for (const [id, name] of names) {
+    if (name.toUpperCase() === wanted) {
+      return { id, name };
+    }
+  }
+  return `Symbol "${symbol}" not found on the exchange of account ${exchangeId} (see list_exchange_symbols).`;
+}
+
+/** Two bots on the same symbol in one account would fight over the same position. */
+async function symbolTakenBy(exchangeId: number, symbolId: number, exceptBotId?: number): Promise<Bot | undefined> {
+  const bots = await getApiClient().listBots({ exchange_id: exchangeId });
+  return bots.find(b => b.symbol_id === symbolId && b.id !== exceptBotId);
+}
+
+/** The admin API has no parameters endpoint: enums come from antbot, grids from GET /grids. */
+export async function getBotParameters(params: GetBotParametersParams): Promise<string> {
+  const botModes = BOT_MODES.map(m => `  - ${m}: ${botModeLabels[m]}`).join('\n');
+  const gridModes = GRID_MODES.map(m => `  - ${m}: ${gridModeLabels[m]}`).join('\n');
+  let grids: string;
   try {
-    const client = getApiClient();
-    const response = await client.getBotParameters();
-    const params = response.data;
+    const list = await getApiClient().listGrids(params.user_id);
+    grids = list.length > 0
+      ? list.map(g => `  - ID: ${g.id}, Name: ${g.name} (User: ${g.user_id}, bots: ${g.bots_count})`).join('\n')
+      : '  No grids found';
+  } catch (error) {
+    grids = `  ${apiErrorText('fetching grids', error)}`;
+  }
+  return `Bot Parameters:
 
-    const botModes = Object.entries(params.bot_modes)
-      .map(([key, label]) => `  - ${key}: ${label}`)
-      .join('\n');
-
-    const gridModes = Object.entries(params.grid_modes)
-      .map(([key, label]) => `  - ${key}: ${label}`)
-      .join('\n');
-
-    const marketTypes = Object.entries(params.market_types)
-      .map(([key, label]) => `  - ${key}: ${label}`)
-      .join('\n');
-
-    const grids = params.grids.length > 0
-      ? params.grids.map(g => `  - ID: ${g.id}, Name: ${g.name} (User: ${g.user_id})`).join('\n')
-      : '  No custom grids available';
-
-    const symbolsGrouped = params.symbols.reduce((acc, s) => {
-      if (!acc[s.exchange]) acc[s.exchange] = [];
-      acc[s.exchange].push(s);
-      return acc;
-    }, {} as Record<string, typeof params.symbols>);
-
-    const symbolsList = Object.entries(symbolsGrouped)
-      .map(([exchange, symbols]) => {
-        const symbolList = symbols.slice(0, 10).map(s => `    - ID: ${s.id}, ${s.nice_name}`).join('\n');
-        const moreCount = symbols.length > 10 ? ` ... and ${symbols.length - 10} more` : '';
-        return `  ${exchange}:\n${symbolList}${moreCount}`;
-      })
-      .join('\n');
-
-    const requiredFields = params.fields.required.join(', ');
-    const optionalFields = params.fields.optional.join(', ');
-    const notes = Object.entries(params.fields.notes)
-      .map(([field, note]) => `  - ${field}: ${note}`)
-      .join('\n');
-
-    return `Bot Parameters:
-
-Bot Modes:
+Bot Modes (lm/sm):
 ${botModes}
 
 Grid Modes:
 ${gridModes}
 
-Market Types:
-${marketTypes}
+Market Types: ${MARKET_TYPES.join(', ')}
 
-Available Grids:
+Limits (PUT /bots/{id}): name up to ${BOT_LIMITS.nameMax} characters, wallet exposure 0-${BOT_LIMITS.weMax}, leverage 1-${BOT_LIMITS.leverageMax}
+
+Available Grids${params.user_id ? ` of user ${params.user_id}` : ''}:
 ${grids}
 
-Available Symbols (by exchange):
-${symbolsList}
-
-Required Fields: ${requiredFields}
-Optional Fields: ${optionalFields}
+Symbols: use list_exchange_symbols with the exchange_id of the account.
 
 Notes:
-${notes}`;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error fetching bot parameters: ${error.message}`;
-    }
-    throw error;
-  }
+  - create_bot requires a grid_id when grid_mode is "custom".
+  - Changes to a running bot reach Passivbot only after a restart (update_bot with restart=true, or restart_bot).`;
 }
 
 export async function listBots(params: ListBotsParams): Promise<string> {
+  if (!params.user_id && !params.exchange_id) {
+    return 'Error: Either user_id or exchange_id is required.';
+  }
+  const filterDesc = params.exchange_id ? `exchange ${params.exchange_id}` : `user ${params.user_id}`;
   try {
-    if (!params.user_id && !params.exchange_id) {
-      return 'Error: Either user_id or exchange_id is required.';
-    }
-
-    const client = getApiClient();
-    const response = await client.listBots({
-      user_id: params.user_id,
-      exchange_id: params.exchange_id,
-    });
-
-    if (response.data.length === 0) {
-      const filterDesc = params.user_id
-        ? `user ${params.user_id}`
-        : `exchange ${params.exchange_id}`;
+    const bots = await getApiClient().listBots({ user_id: params.user_id, exchange_id: params.exchange_id });
+    if (bots.length === 0) {
       return `No bots found for ${filterDesc}.`;
     }
 
-    const botsSummary = response.data.map(formatBot).join('\n\n');
-    const filterDesc = params.user_id
-      ? `User ${params.user_id}`
-      : `Exchange ${params.exchange_id}`;
-
-    const runningCount = response.data.filter(b => b.is_running).length;
-
-    return `Bots for ${filterDesc} (Total: ${response.data.length}, Running: ${runningCount}):\n\n${botsSummary}`;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error fetching bots: ${error.message}`;
+    const names = new Map<number, string>();
+    const exchangeIds = [...new Set(bots.map(b => b.exchange_id))].filter(id => id > 0);
+    if (exchangeIds.length <= MAX_SYMBOL_LOOKUPS) {
+      for (const exchangeId of exchangeIds) {
+        try {
+          for (const [id, name] of await symbolNames(exchangeId)) {
+            names.set(id, name);
+          }
+        } catch {
+          // keep symbol ids if the lookup fails
+        }
+      }
     }
-    throw error;
+
+    const onCount = bots.filter(isRunningFlag).length;
+    const lines = bots.map(b => formatBotLine(b, names)).join('\n');
+    return `Bots for ${filterDesc} (Total: ${bots.length}, ON per database: ${onCount}):
+${lines}
+
+Status is the database flag (started_at + pid); use get_bot_status for a live process check.
+Modes: n=Normal, m=Manual, gs=Graceful Stop, t=Take Profit Only, p=Panic.`;
+  } catch (error) {
+    return apiErrorText('fetching bots', error);
   }
 }
 
 export async function getBot(params: GetBotParams): Promise<string> {
   try {
     const client = getApiClient();
-    const response = await client.getBot(params.id);
-    return formatBotDetailed(response.data);
-  } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error fetching bot: ${error.message}`;
+    const bot = await client.getBot(params.id);
+    let status: BotStatus | null = null;
+    let statusError: string | null = null;
+    try {
+      status = await client.getBotStatus(params.id);
+    } catch (error) {
+      statusError = error instanceof Error ? error.message : String(error);
     }
-    throw error;
+    return formatBotDetailed(bot, status, statusError);
+  } catch (error) {
+    return apiErrorText('fetching bot', error, `Bot with ID ${params.id} not found.`);
   }
 }
 
 export async function createBot(params: CreateBotParams): Promise<string> {
+  if (params.symbol_id === undefined && !params.symbol) {
+    return 'Error: pass symbol_id or symbol.';
+  }
+  if (params.grid_mode === 'custom' && !params.grid_id) {
+    return 'Error: grid_id is required when grid_mode is "custom" (see list_grids).';
+  }
   try {
     const client = getApiClient();
-    const response = await client.createBot({
+    // POST /bots does no validation and does not set the owner: take it from the exchange.
+    const exchange = await client.getExchange(params.exchange_id);
+    const symbol = await resolveSymbol(params.exchange_id, params.symbol_id, params.symbol);
+    if (typeof symbol === 'string') {
+      return `Error: ${symbol}`;
+    }
+    const taken = await symbolTakenBy(params.exchange_id, symbol.id);
+    if (taken) {
+      return `Error: exchange ${params.exchange_id} already has bot #${taken.id} (${taken.name}) on ${symbol.name}. Only one bot per symbol and account.`;
+    }
+    const bot = await client.createBot({
+      user_id: exchange.user_id,
       name: params.name,
       exchange_id: params.exchange_id,
-      symbol_id: params.symbol_id,
+      symbol_id: symbol.id,
       market_type: params.market_type,
       grid_mode: params.grid_mode,
-      grid_id: params.grid_id,
+      grid_id: params.grid_id ?? null,
       lm: params.lm,
       lwe: params.lwe,
       sm: params.sm,
@@ -306,207 +301,107 @@ export async function createBot(params: CreateBotParams): Promise<string> {
       is_on_trend: params.is_on_trend,
       is_on_routines: params.is_on_routines,
     });
-    const bot = response.data;
-
-    return `Bot created successfully:
-- ID: ${bot.id}
-- Name: ${bot.name}
-- Symbol: ${bot.symbol?.nice_name || bot.symbol_id}
-- Grid Mode: ${gridModeLabels[bot.grid_mode] || bot.grid_mode}
-- Long: ${botModeLabels[bot.lm] || bot.lm} (WE: ${bot.lwe})
-- Short: ${botModeLabels[bot.sm] || bot.sm} (WE: ${bot.swe})
+    return `Bot created successfully (symbol ${symbol.name}):
+${formatBotSummary(bot)}
 
 Note: Bot is created in STOPPED state. Use start_bot to start it.`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      return `Error creating bot: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('creating bot', error, `Exchange with ID ${params.exchange_id} not found.`);
   }
 }
 
 export async function updateBot(params: UpdateBotParams): Promise<string> {
+  const { id, restart, ...fields } = params;
+  const updateData: BotUpdateData = Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined)
+  );
+  if (Object.keys(updateData).length === 0) {
+    return 'Nothing to update: pass at least one field besides id and restart.';
+  }
   try {
     const client = getApiClient();
-
-    const updateData: Record<string, unknown> = {};
-    if (params.name !== undefined) updateData.name = params.name;
-    if (params.symbol_id !== undefined) updateData.symbol_id = params.symbol_id;
-    if (params.market_type !== undefined) updateData.market_type = params.market_type;
-    if (params.grid_mode !== undefined) updateData.grid_mode = params.grid_mode;
-    if (params.grid_id !== undefined) updateData.grid_id = params.grid_id;
-    if (params.lm !== undefined) updateData.lm = params.lm;
-    if (params.lwe !== undefined) updateData.lwe = params.lwe;
-    if (params.sm !== undefined) updateData.sm = params.sm;
-    if (params.swe !== undefined) updateData.swe = params.swe;
-    if (params.leverage !== undefined) updateData.leverage = params.leverage;
-    if (params.assigned_balance !== undefined) updateData.assigned_balance = params.assigned_balance;
-    if (params.oh_mode !== undefined) updateData.oh_mode = params.oh_mode;
-    if (params.show_logs !== undefined) updateData.show_logs = params.show_logs;
-    if (params.is_on_trend !== undefined) updateData.is_on_trend = params.is_on_trend;
-    if (params.is_on_routines !== undefined) updateData.is_on_routines = params.is_on_routines;
-
-    const response = await client.updateBot(params.id, updateData);
-    const bot = response.data;
-
+    if (updateData.symbol_id !== undefined || updateData.symbol !== undefined) {
+      const current = await client.getBot(id);
+      const symbol = await resolveSymbol(current.exchange_id, updateData.symbol_id, updateData.symbol);
+      if (typeof symbol === 'string') {
+        return `Error: ${symbol}`;
+      }
+      const taken = await symbolTakenBy(current.exchange_id, symbol.id, id);
+      if (taken) {
+        return `Error: exchange ${current.exchange_id} already has bot #${taken.id} (${taken.name}) on ${symbol.name}. Only one bot per symbol and account.`;
+      }
+      delete updateData.symbol;
+      updateData.symbol_id = symbol.id;
+    }
+    const result = await client.updateBot(id, { ...updateData, restart });
+    const restartNote = result.restarted === true
+      ? 'The bot was restarted and Passivbot loaded the change.'
+      : result.restarted === false
+        ? 'WARNING: the restart failed; check the bot with get_bot_status.'
+        : isRunningFlag(result.bot)
+          ? 'Not restarted: Passivbot keeps the previous settings until restart_bot (or update_bot with restart=true).'
+          : 'The bot is stopped; the change applies on the next start.';
     return `Bot updated successfully:
-- ID: ${bot.id}
-- Name: ${bot.name}
-- Status: ${bot.is_running ? 'RUNNING' : 'STOPPED'}
-- Long: ${botModeLabels[bot.lm] || bot.lm} (WE: ${bot.lwe})
-- Short: ${botModeLabels[bot.sm] || bot.sm} (WE: ${bot.swe})
+${formatBotSummary(result.bot)}
 
-Note: If the bot is running, you may need to restart it for some changes to take effect.`;
+${restartNote}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error updating bot: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('updating bot', error, `Bot with ID ${id} not found.`);
   }
 }
 
-export async function startBot(params: StartBotParams): Promise<string> {
+export async function startBot(params: BotIdParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.startBot(params.id);
-    const bot = response.data;
-
-    return `${response.message}
-- ID: ${bot.id}
-- Name: ${bot.name}
-- PID: ${bot.pid}
-- Started At: ${bot.started_at}`;
+    const result = await getApiClient().startBot(params.id);
+    const headline = result.already_running ? 'Bot was already running.' : result.success ? 'Bot started.' : 'Bot start reported failure.';
+    return `${headline}
+- ID: ${result.bot.id}
+- Name: ${result.bot.name}
+- PID: ${result.bot.pid ?? 'N/A'}
+- Started At: ${result.bot.started_at ?? 'N/A'}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      if (error.status === 422) {
-        return `Error starting bot: ${error.message}`;
-      }
-      return `Error starting bot: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('starting bot', error, `Bot with ID ${params.id} not found.`);
   }
 }
 
-export async function stopBot(params: StopBotParams): Promise<string> {
+export async function stopBot(params: BotIdParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.stopBot(params.id);
-    const bot = response.data;
-
-    return `${response.message}
-- ID: ${bot.id}
-- Name: ${bot.name}
-- Status: STOPPED`;
+    const result = await getApiClient().stopBot(params.id);
+    return `${result.success ? 'Bot stopped.' : 'WARNING: the bot still appears as running.'}
+- ID: ${result.bot.id}
+- Name: ${result.bot.name}
+- Database flag: ${stateText(result.bot)}
+- Stopped At: ${result.bot.stopped_at ?? 'N/A'}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error stopping bot: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('stopping bot', error, `Bot with ID ${params.id} not found.`);
   }
 }
 
-export async function restartBot(params: RestartBotParams): Promise<string> {
+export async function restartBot(params: BotIdParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.restartBot(params.id);
-    const bot = response.data;
-
-    return `${response.message}
-- ID: ${bot.id}
-- Name: ${bot.name}
-- PID: ${bot.pid}
-- Started At: ${bot.started_at}`;
+    const result = await getApiClient().restartBot(params.id);
+    return `${result.success ? 'Bot restarted.' : 'Bot restart reported failure.'}
+- ID: ${result.bot.id}
+- Name: ${result.bot.name}
+- PID: ${result.bot.pid ?? 'N/A'}
+- Started At: ${result.bot.started_at ?? 'N/A'}`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      if (error.status === 422) {
-        return `Error restarting bot: ${error.message}`;
-      }
-      return `Error restarting bot: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('restarting bot', error, `Bot with ID ${params.id} not found.`);
   }
 }
 
-export async function swapBotWe(params: SwapBotWeParams): Promise<string> {
+export async function getBotStatus(params: BotIdParams): Promise<string> {
   try {
-    const client = getApiClient();
-    const response = await client.swapBotWe(params.id, params.new_trend);
-    const bot = response.data;
-
-    return `${response.message}
-- ID: ${bot.id}
-- Name: ${bot.name}
-- Long WE: ${bot.lwe}
-- Short WE: ${bot.swe}
-
-Note: If the bot is running, restart it for changes to take effect.`;
+    const status = await getApiClient().getBotStatus(params.id);
+    return `Bot Status (ID: ${params.id}):
+- Process Running: ${status.running ? 'YES' : 'NO'}
+- PID: ${status.pid ?? 'N/A'}
+- Started At: ${status.started_at ?? 'N/A'}
+- Symbol: ${status.symbol ?? 'N/A'}
+- Long: ${modeText(status.lm)}, wallet exposure ${status.lwe}
+- Short: ${modeText(status.sm)}, wallet exposure ${status.swe}
+- Leverage: ${status.leverage}x`;
   } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error swapping wallet exposure: ${error.message}`;
-    }
-    throw error;
-  }
-}
-
-export async function simpleSwapBotWe(params: SimpleSwapBotWeParams): Promise<string> {
-  try {
-    const client = getApiClient();
-    const response = await client.simpleSwapBotWe(params.id);
-    const bot = response.data;
-
-    return `${response.message}
-- ID: ${bot.id}
-- Name: ${bot.name}
-- Long WE: ${bot.lwe}
-- Short WE: ${bot.swe}
-
-Note: If the bot is running, restart it for changes to take effect.`;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error swapping wallet exposure: ${error.message}`;
-    }
-    throw error;
-  }
-}
-
-export async function getBotStatus(params: GetBotStatusParams): Promise<string> {
-  try {
-    const client = getApiClient();
-    const response = await client.getBotStatus(params.id);
-    const status = response.data;
-
-    return `Bot Status:
-- ID: ${status.id}
-- Name: ${status.name}
-- Process Running: ${status.is_running ? 'YES' : 'NO'}
-- PID: ${status.pid || 'N/A'}
-- Started At: ${status.started_at || 'N/A'}
-- Stopped At: ${status.stopped_at || 'N/A'}`;
-  } catch (error) {
-    if (error instanceof ApiError) {
-      if (error.status === 404) {
-        return `Bot with ID ${params.id} not found.`;
-      }
-      return `Error fetching bot status: ${error.message}`;
-    }
-    throw error;
+    return apiErrorText('fetching bot status', error, `Bot with ID ${params.id} not found.`);
   }
 }
